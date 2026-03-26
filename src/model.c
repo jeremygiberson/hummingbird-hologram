@@ -236,7 +236,8 @@ struct Model {
     int    texture_count;
 
     /* Animation */
-    float  anim_time;
+    float  anim_time;       /* Body/head/tail time (1x speed) */
+    float  anim_time_wings; /* Wing time (fast speed) */
     float  anim_duration;
 
     /* Skinning */
@@ -530,7 +531,55 @@ Model *model_load(const char *glb_path) {
                 if (max_t > m->anim_duration) m->anim_duration = max_t;
             }
         }
-        fprintf(stderr, "[model] Animation duration: %.2fs\n", m->anim_duration);
+        /* Find the usable loop point by detecting where wing rotation
+         * stops cycling. The baked animation has a "rest" tail at the end
+         * where the wings lock in place. We find the last keyframe that
+         * still matches the cyclic pattern by comparing to the first
+         * keyframe's value — the cycle restarts each time the quaternion
+         * returns close to its t=0 value. */
+        for (cgltf_size i = 0; i < anim->channels_count; i++) {
+            const cgltf_animation_channel *ch = &anim->channels[i];
+            if (ch->target_path != cgltf_animation_path_type_rotation)
+                continue;
+            if (!ch->target_node->name || !strstr(ch->target_node->name, "Wing1.R"))
+                continue;
+
+            /* Sample at fine intervals and find where the cycle breaks */
+            float q_prev[4], q_curr[4];
+            sample_quat(ch->sampler, 0.0f, q_prev);
+            float last_cycle_start = 0.0f;
+            float step = 0.05f;
+
+            for (float t = step; t <= m->anim_duration; t += step) {
+                sample_quat(ch->sampler, t, q_curr);
+                /* Detect when the quaternion returns close to t=0 value */
+                float dot = q_prev[0]*q_curr[0] + q_prev[1]*q_curr[1] +
+                            q_prev[2]*q_curr[2] + q_prev[3]*q_curr[3];
+                if (dot < 0.0f) dot = -dot;
+
+                float dot0 = q_curr[0]*q_prev[0] + q_curr[1]*q_prev[1] +
+                             q_curr[2]*q_prev[2] + q_curr[3]*q_prev[3]; (void)dot0;
+
+                /* Check similarity to the t=0 pose */
+                float q0[4];
+                sample_quat(ch->sampler, 0.0f, q0);
+                float sim = q_curr[0]*q0[0] + q_curr[1]*q0[1] +
+                            q_curr[2]*q0[2] + q_curr[3]*q0[3];
+                if (sim < 0.0f) sim = -sim;
+                if (sim > 0.999f && t > 1.0f) {
+                    last_cycle_start = t;
+                }
+            }
+
+            if (last_cycle_start > 1.0f) {
+                fprintf(stderr, "[model] Wing flap cycle: last clean restart at %.2fs (was %.2fs)\n",
+                        last_cycle_start, m->anim_duration);
+                m->anim_duration = last_cycle_start;
+            }
+            break;
+        }
+
+        fprintf(stderr, "[model] Animation loop duration: %.2fs\n", m->anim_duration);
     } else {
         m->anim_duration = 1.0f;  /* Static model, just loop identity */
     }
@@ -646,20 +695,33 @@ static void node_world_transform(const cgltf_node *n, Mat4 out) {
     #undef WT_MAX_DEPTH
 }
 
+/* Wing bones animate at a faster rate to simulate hummingbird flapping.
+ * The baked animation has ~0.67 flaps/sec (1.5s per cycle).
+ * 8x gives ~5 flaps/sec — fast enough to read as hummingbird,
+ * slow enough to see wing motion at 30fps.
+ * Body/head/tail stay at 1x for smooth, natural sway. */
+#define WING_ANIM_SPEED 8.0f
+
+static bool is_wing_node(const cgltf_node *node) {
+    if (!node || !node->name) return false;
+    return strstr(node->name, "Wing") != NULL;
+}
+
 void model_update(Model *m, float dt) {
     if (!m) return;
 
     m->anim_time += dt;
+    m->anim_time_wings += dt * WING_ANIM_SPEED;
 
     if (m->gltf && m->gltf->animations_count > 0) {
-        /* Wrap animation time */
-        if (m->anim_time >= m->anim_duration) {
+        /* Wrap both timers */
+        while (m->anim_time >= m->anim_duration)
             m->anim_time -= m->anim_duration;
-        }
+        while (m->anim_time_wings >= m->anim_duration)
+            m->anim_time_wings -= m->anim_duration;
 
-        /* Apply animation channels: override the node's TRS properties
-         * so that node_local_matrix() picks them up when we compute
-         * world transforms below. */
+        /* Apply animation channels: wing bones use fast time,
+         * everything else uses normal time. */
         const cgltf_animation *anim = &m->gltf->animations[0];
         for (cgltf_size i = 0; i < anim->channels_count; i++) {
             const cgltf_animation_channel *ch = &anim->channels[i];
@@ -671,19 +733,21 @@ void model_update(Model *m, float dt) {
                 continue;
 
             cgltf_node *target = ch->target_node;
+            float t = is_wing_node(target) ? m->anim_time_wings : m->anim_time;
+
             switch (ch->target_path) {
             case cgltf_animation_path_type_translation:
-                sample_vec3(sampler, m->anim_time, target->translation);
+                sample_vec3(sampler, t, target->translation);
                 target->has_translation = 1;
                 target->has_matrix = 0;
                 break;
             case cgltf_animation_path_type_rotation:
-                sample_quat(sampler, m->anim_time, target->rotation);
+                sample_quat(sampler, t, target->rotation);
                 target->has_rotation = 1;
                 target->has_matrix = 0;
                 break;
             case cgltf_animation_path_type_scale:
-                sample_vec3(sampler, m->anim_time, target->scale);
+                sample_vec3(sampler, t, target->scale);
                 target->has_scale = 1;
                 target->has_matrix = 0;
                 break;
