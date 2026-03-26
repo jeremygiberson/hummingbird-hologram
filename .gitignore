@@ -1,0 +1,25 @@
+# Build output
+build/
+cmake-build-*/
+
+# IDE / tooling caches
+.vscode/
+.idea/
+.cache/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Compiled objects
+*.o
+*.d
+
+# Binary
+hologram
+
+# Buildroot output (when building inside tree)
+buildroot-external/output/
+
+# Raw downloaded asset archives (the processed .glb is committed)
+assets/lowpoly-humming-bird-animated/

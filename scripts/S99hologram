@@ -1,0 +1,48 @@
+#!/bin/sh
+#
+# S99hologram — Start hologram visualizer
+#
+# This runs as the last init script, launching the hologram binary
+# directly on the KMS/DRM framebuffer with no display server.
+
+DAEMON=/usr/bin/hologram
+PIDFILE=/var/run/hologram.pid
+LOGFILE=/var/log/hologram.log
+
+# SDL2 backend configuration
+export SDL_VIDEODRIVER=kmsdrm
+export SDL_AUDIODRIVER=alsa
+
+# Mesa/DRM: use the VC4 GPU
+export MESA_GL_VERSION_OVERRIDE=2.1
+export LIBGL_ALWAYS_SOFTWARE=0
+
+case "$1" in
+    start)
+        printf "Starting hologram: "
+        if [ ! -f "$DAEMON" ]; then
+            echo "FAIL (binary not found)"
+            exit 1
+        fi
+        start-stop-daemon -S -b -m -p "$PIDFILE" \
+            --exec /bin/sh -- -c "$DAEMON >> $LOGFILE 2>&1"
+        echo "OK"
+        ;;
+    stop)
+        printf "Stopping hologram: "
+        start-stop-daemon -K -p "$PIDFILE" -s TERM
+        rm -f "$PIDFILE"
+        echo "OK"
+        ;;
+    restart)
+        $0 stop
+        sleep 1
+        $0 start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 1
+        ;;
+esac
+
+exit 0
