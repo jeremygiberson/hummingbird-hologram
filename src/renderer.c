@@ -1,49 +1,41 @@
 /*
- * renderer.c — GL renderer with multi-pass bloom
+ * renderer.c — GL renderer with layer composition
  *
  * Pipeline:
- *   1. Render scene → FBO A (model on black)
- *   2. Bright extract: FBO A → FBO B (threshold)
- *   3. Gaussian blur: FBO B → FBO C → FBO B (ping-pong, 2 iterations)
- *   4. Composite: FBO A (scene) + FBO B (bloom) → screen
+ *   1. Iterate enabled layers, each draws into shared scene FBO
+ *   2. Composite scene FBO to screen
  */
 #include "renderer.h"
 #include "shader.h"
+#include "layer.h"
 
 #include <stdio.h>
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
-/* Bloom configuration                                                 */
+/* Configuration                                                       */
 /* ------------------------------------------------------------------ */
 
-#define BLOOM_BLUR_PASSES   3       /* Number of blur ping-pong iterations */
-#define BLOOM_DOWNSAMPLE    2       /* Bloom FBOs at 1/N resolution */
-#define BLOOM_THRESHOLD     0.85f   /* Brightness cutoff for extraction */
-#define MOTION_BLUR_SAMPLES 1       /* 1 = disabled for now */
+#define MAX_LAYERS 16
 
 /* ------------------------------------------------------------------ */
 /* State                                                               */
 /* ------------------------------------------------------------------ */
 
 static int s_width, s_height;
-static int s_bloom_w, s_bloom_h;
 
 /* Shaders */
-static GLuint s_scene_prog     = 0;
-static GLuint s_extract_prog   = 0;
-static GLuint s_blur_prog      = 0;
 static GLuint s_composite_prog = 0;
 
-/* FBOs: A = scene, B/C = bloom ping-pong */
+/* FBOs: scene */
 static GLuint s_fbo_scene = 0, s_tex_scene = 0, s_rbo_depth = 0;
-static GLuint s_fbo_bloom[2] = {0}, s_tex_bloom[2] = {0};
 
 /* Fullscreen quad */
 static GLuint s_quad_vbo = 0;
 
-/* Scene shader uniforms */
-static ModelUniforms s_model_uniforms;
+/* Layer registry */
+static Layer *s_layers[MAX_LAYERS];
+static int s_layer_count = 0;
 
 /* ------------------------------------------------------------------ */
 /* Fullscreen quad                                                     */
@@ -57,7 +49,7 @@ static const float QUAD_VERTS[] = {
      1.0f,  1.0f,  1.0f, 1.0f,
 };
 
-static void draw_fullscreen_quad(void) {
+void draw_fullscreen_quad(void) {
     glBindBuffer(GL_ARRAY_BUFFER, s_quad_vbo);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)0);
@@ -73,7 +65,7 @@ static void draw_fullscreen_quad(void) {
 /* FBO creation                                                        */
 /* ------------------------------------------------------------------ */
 
-static bool create_fbo_color(GLuint *fbo, GLuint *tex, int w, int h) {
+bool create_fbo_color(GLuint *fbo, GLuint *tex, int w, int h) {
     glGenFramebuffers(1, fbo);
     glGenTextures(1, tex);
 
@@ -139,52 +131,15 @@ static bool create_scene_fbo(int w, int h) {
 /* ------------------------------------------------------------------ */
 
 static bool load_shaders(void) {
-    s_scene_prog = shader_load(
-        SHADER_PATH("scene.vert"), SHADER_PATH("scene.frag"));
-    s_extract_prog = shader_load(
-        SHADER_PATH("fullscreen.vert"), SHADER_PATH("bright_extract.frag"));
-    s_blur_prog = shader_load(
-        SHADER_PATH("fullscreen.vert"), SHADER_PATH("blur.frag"));
     s_composite_prog = shader_load(
         SHADER_PATH("fullscreen.vert"), SHADER_PATH("composite.frag"));
-
-    if (!s_scene_prog || !s_extract_prog || !s_blur_prog || !s_composite_prog) {
-        fprintf(stderr, "[renderer] Failed to load one or more shaders\n");
+    if (!s_composite_prog) {
+        fprintf(stderr, "[renderer] Failed to load composite shader\n");
         return false;
     }
-
-    /* Bind attribute locations BEFORE linking (must match model.c layout) */
-    glBindAttribLocation(s_scene_prog, 0, "a_position");
-    glBindAttribLocation(s_scene_prog, 1, "a_normal");
-    glBindAttribLocation(s_scene_prog, 2, "a_texcoord");
-    glBindAttribLocation(s_scene_prog, 3, "a_joints");
-    glBindAttribLocation(s_scene_prog, 4, "a_weights");
-    glLinkProgram(s_scene_prog);  /* Re-link after binding attribs */
-
-    /* Cache scene shader uniform locations (after re-link) */
-    s_model_uniforms.u_model_matrix = glGetUniformLocation(s_scene_prog, "u_model");
-    s_model_uniforms.u_view_matrix  = glGetUniformLocation(s_scene_prog, "u_view");
-    s_model_uniforms.u_proj_matrix  = glGetUniformLocation(s_scene_prog, "u_proj");
-    s_model_uniforms.u_texture0     = glGetUniformLocation(s_scene_prog, "u_texture0");
-    s_model_uniforms.u_texture1     = glGetUniformLocation(s_scene_prog, "u_texture1");
-    s_model_uniforms.u_energy       = glGetUniformLocation(s_scene_prog, "u_energy");
-    s_model_uniforms.u_has_skin     = glGetUniformLocation(s_scene_prog, "u_has_skin");
-
-    /* Look up joint matrix uniforms: u_joints[0], u_joints[1], ... */
-    for (int i = 0; i < MAX_JOINTS; i++) {
-        char name[32];
-        snprintf(name, sizeof(name), "u_joints[%d]", i);
-        s_model_uniforms.u_joints[i] = glGetUniformLocation(s_scene_prog, name);
-    }
-
-    /* Bind fullscreen quad attribute locations for post-process shaders */
-    GLuint post_progs[] = {s_extract_prog, s_blur_prog, s_composite_prog};
-    for (int i = 0; i < 3; i++) {
-        glBindAttribLocation(post_progs[i], 0, "a_position");
-        glBindAttribLocation(post_progs[i], 1, "a_texcoord");
-        glLinkProgram(post_progs[i]);
-    }
-
+    glBindAttribLocation(s_composite_prog, 0, "a_position");
+    glBindAttribLocation(s_composite_prog, 1, "a_texcoord");
+    glLinkProgram(s_composite_prog);
     return true;
 }
 
@@ -195,11 +150,8 @@ static bool load_shaders(void) {
 bool renderer_init(int width, int height) {
     s_width  = width;
     s_height = height;
-    s_bloom_w = width  / BLOOM_DOWNSAMPLE;
-    s_bloom_h = height / BLOOM_DOWNSAMPLE;
 
-    fprintf(stderr, "[renderer] Init: %dx%d, bloom %dx%d\n",
-            s_width, s_height, s_bloom_w, s_bloom_h);
+    fprintf(stderr, "[renderer] Init: %dx%d\n", s_width, s_height);
 
     /* Global GL state */
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -214,10 +166,6 @@ bool renderer_init(int width, int height) {
 
     /* FBOs */
     if (!create_scene_fbo(s_width, s_height)) return false;
-    if (!create_fbo_color(&s_fbo_bloom[0], &s_tex_bloom[0], s_bloom_w, s_bloom_h))
-        return false;
-    if (!create_fbo_color(&s_fbo_bloom[1], &s_tex_bloom[1], s_bloom_w, s_bloom_h))
-        return false;
 
     /* Shaders */
     if (!load_shaders()) return false;
@@ -226,48 +174,54 @@ bool renderer_init(int width, int height) {
     return true;
 }
 
-void renderer_frame(Model *model, const AudioBands *bands, float dt) {
-    /* --- Pass 1: Render scene to FBO with motion blur accumulation ---
-     * Render N sub-frames at slightly different animation times.
-     * Each sub-frame draws at 1/N alpha with additive blending.
-     * The wings move fast so they blur; the body barely moves so it stays sharp. */
+bool renderer_add_layer(Layer *layer) {
+    if (s_layer_count >= MAX_LAYERS) {
+        fprintf(stderr, "[renderer] MAX_LAYERS (%d) reached\n", MAX_LAYERS);
+        return false;
+    }
+    s_layers[s_layer_count++] = layer;
+    fprintf(stderr, "[renderer] Added layer '%s' (index %d)\n",
+            layer->name, s_layer_count - 1);
+    return true;
+}
+
+int renderer_get_layer_count(void) {
+    return s_layer_count;
+}
+
+Layer *renderer_get_layer(int index) {
+    if (index < 0 || index >= s_layer_count) return NULL;
+    return s_layers[index];
+}
+
+GLuint renderer_get_scene_fbo(void) {
+    return s_fbo_scene;
+}
+
+void renderer_get_dimensions(int *width, int *height) {
+    if (width)  *width  = s_width;
+    if (height) *height = s_height;
+}
+
+void renderer_frame(const AudioBands *bands, float dt) {
+    /* Pass 1: Render all enabled layers into shared scene FBO */
     glBindFramebuffer(GL_FRAMEBUFFER, s_fbo_scene);
     glViewport(0, 0, s_width, s_height);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    glUseProgram(s_scene_prog);
-
-    /* Set audio-reactive uniforms on scene shader */
-    GLint loc;
-    loc = glGetUniformLocation(s_scene_prog, "u_bass");
-    if (loc >= 0) glUniform1f(loc, bands->bass);
-    loc = glGetUniformLocation(s_scene_prog, "u_mid");
-    if (loc >= 0) glUniform1f(loc, bands->mid);
-    loc = glGetUniformLocation(s_scene_prog, "u_high");
-    if (loc >= 0) glUniform1f(loc, bands->high);
-
-    GLint u_alpha = glGetUniformLocation(s_scene_prog, "u_alpha");
-    float sub_dt = dt / (float)MOTION_BLUR_SAMPLES;
-    float alpha = 1.0f / (float)MOTION_BLUR_SAMPLES;
-
-    /* Use additive blending for accumulation */
-    glBlendFunc(GL_ONE, GL_ONE);
-
-    for (int s = 0; s < MOTION_BLUR_SAMPLES; s++) {
-        /* Clear depth only (not color) so each sub-frame can draw */
-        if (s > 0) glClear(GL_DEPTH_BUFFER_BIT);
-
-        /* Set per-sub-frame alpha */
-        if (u_alpha >= 0) glUniform1f(u_alpha, alpha);
-
-        model_update(model, sub_dt);
-        model_draw(model, &s_model_uniforms, bands->energy);
-    }
-
-    /* Restore standard alpha blending for bloom passes */
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    /* --- Blit scene FBO to screen (bloom disabled) --- */
+    for (int i = 0; i < s_layer_count; i++) {
+        Layer *l = s_layers[i];
+        if (l->current_option > 0) {
+            l->update(l, bands, dt);
+            l->draw(l, bands);
+        }
+    }
+
+    /* Pass 2: Composite scene FBO to screen */
     glDisable(GL_DEPTH_TEST);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, s_width, s_height);
@@ -279,9 +233,9 @@ void renderer_frame(Model *model, const AudioBands *bands, float dt) {
     glBindTexture(GL_TEXTURE_2D, s_tex_scene);
     glUniform1i(glGetUniformLocation(s_composite_prog, "u_scene"), 0);
 
-    /* Zero out bloom */
+    /* Bind scene texture as placeholder bloom to avoid null texture on GLES2 */
     glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, s_tex_bloom[0]);
+    glBindTexture(GL_TEXTURE_2D, s_tex_scene);
     glUniform1i(glGetUniformLocation(s_composite_prog, "u_bloom"), 1);
     glUniform1f(glGetUniformLocation(s_composite_prog, "u_bloom_intensity"), 0.0f);
     glUniform1f(glGetUniformLocation(s_composite_prog, "u_bass"), bands->bass);
@@ -293,26 +247,28 @@ void renderer_frame(Model *model, const AudioBands *bands, float dt) {
 }
 
 void renderer_resize(int width, int height) {
-    /* TODO: Recreate FBOs at new size */
     s_width  = width;
     s_height = height;
-    s_bloom_w = width  / BLOOM_DOWNSAMPLE;
-    s_bloom_h = height / BLOOM_DOWNSAMPLE;
     fprintf(stderr, "[renderer] Resize: %dx%d\n", width, height);
+
+    /* Notify all layers */
+    for (int i = 0; i < s_layer_count; i++) {
+        Layer *l = s_layers[i];
+        if (l->resize) {
+            l->resize(l, width, height);
+        }
+    }
 }
 
 void renderer_shutdown(void) {
-    if (s_scene_prog)     glDeleteProgram(s_scene_prog);
-    if (s_extract_prog)   glDeleteProgram(s_extract_prog);
-    if (s_blur_prog)      glDeleteProgram(s_blur_prog);
     if (s_composite_prog) glDeleteProgram(s_composite_prog);
 
     glDeleteFramebuffers(1, &s_fbo_scene);
     glDeleteTextures(1, &s_tex_scene);
     glDeleteRenderbuffers(1, &s_rbo_depth);
-    glDeleteFramebuffers(2, s_fbo_bloom);
-    glDeleteTextures(2, s_tex_bloom);
     glDeleteBuffers(1, &s_quad_vbo);
+
+    s_layer_count = 0;
 
     fprintf(stderr, "[renderer] Shutdown\n");
 }

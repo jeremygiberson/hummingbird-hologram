@@ -7,7 +7,8 @@
 #include "platform.h"
 #include "renderer.h"
 #include "audio.h"
-#include "model.h"
+#include "layer.h"
+#include "layer_hummingbird.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -98,16 +99,19 @@ int main(int argc, char *argv[]) {
         goto cleanup;
     }
 
-    /* Load model */
-    Model *model = model_load(ASSET_PATH("hummingbird.glb"));
-    if (!model) {
-        fprintf(stderr, "[main] Model not found — using debug icosahedron\n");
-        model = model_create_debug();
-    }
-    if (!model) {
-        fprintf(stderr, "[main] Failed to create any model\n");
+    /* Create and register layers */
+    Layer *hb = layer_hummingbird_create();
+    if (!hb) {
+        fprintf(stderr, "[main] Failed to create hummingbird layer\n");
         goto cleanup;
     }
+    if (!hb->init(hb, fb_w, fb_h)) {
+        fprintf(stderr, "[main] Hummingbird layer init failed\n");
+        free(hb);
+        goto cleanup;
+    }
+    hb->current_option = 1;  /* start enabled, no bloom */
+    renderer_add_layer(hb);
 
     /* --- Main loop --- */
     fprintf(stderr, "[main] Entering main loop at %d FPS\n", TARGET_FPS);
@@ -125,12 +129,28 @@ int main(int argc, char *argv[]) {
             case SDL_QUIT:
                 running = false;
                 break;
-            case SDL_KEYDOWN:
-                if (ev.key.keysym.sym == SDLK_ESCAPE ||
-                    ev.key.keysym.sym == SDLK_q) {
+            case SDL_KEYDOWN: {
+                SDL_Keycode sym = ev.key.keysym.sym;
+                if (sym == SDLK_ESCAPE || sym == SDLK_q) {
                     running = false;
+                } else {
+                    int idx = -1;
+                    if (sym >= SDLK_1 && sym <= SDLK_9)
+                        idx = sym - SDLK_1;
+                    else if (sym == SDLK_0)
+                        idx = 9;
+                    if (idx >= 0 && idx < renderer_get_layer_count()) {
+                        Layer *l = renderer_get_layer(idx);
+                        if (l->current_option < l->option_count)
+                            l->current_option++;
+                        else
+                            l->current_option = 0;
+                        fprintf(stderr, "[main] Layer '%s' option: %d/%d\n",
+                                l->name, l->current_option, l->option_count);
+                    }
                 }
                 break;
+            }
             case SDL_WINDOWEVENT:
                 if (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
                     SDL_GL_GetDrawableSize(window, &fb_w, &fb_h);
@@ -153,7 +173,7 @@ int main(int argc, char *argv[]) {
         AudioBands bands = audio_get_bands();
 
         /* --- Render --- */
-        renderer_frame(model, &bands, dt);
+        renderer_frame(&bands, dt);
         SDL_GL_SwapWindow(window);
 
         /* --- Frame limiting --- */
@@ -166,7 +186,13 @@ int main(int argc, char *argv[]) {
     /* --- Cleanup --- */
 cleanup:
     fprintf(stderr, "[main] Shutting down\n");
-    if (model) model_destroy(model);
+    for (int i = 0; i < renderer_get_layer_count(); i++) {
+        Layer *l = renderer_get_layer(i);
+        if (l) {
+            l->shutdown(l);
+            free(l);
+        }
+    }
     audio_shutdown();
     renderer_shutdown();
     SDL_GL_DeleteContext(gl_ctx);

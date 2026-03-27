@@ -54,6 +54,7 @@ endif()
 set(SOURCES
     src/main.c
     src/renderer.c
+    src/layer_hummingbird.c
     src/shader.c
     src/audio.c
     src/model.c
