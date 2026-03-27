@@ -319,6 +319,33 @@ static size_t accessor_stride(const cgltf_accessor *acc) {
 }
 
 /* ------------------------------------------------------------------ */
+/* External texture loading (from PNG file on disk)                     */
+/* ------------------------------------------------------------------ */
+
+static GLuint load_texture_from_file(const char *path) {
+    int w, h, channels;
+    unsigned char *pixels = stbi_load(path, &w, &h, &channels, 4);
+    if (!pixels) {
+        fprintf(stderr, "[model] Failed to load texture: %s\n", path);
+        return 0;
+    }
+
+    GLuint tex;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+
+    stbi_image_free(pixels);
+    fprintf(stderr, "[model] Loaded external texture: %s (%dx%d) → %u\n", path, w, h, tex);
+    return tex;
+}
+
+/* ------------------------------------------------------------------ */
 /* Public API                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -400,32 +427,13 @@ Model *model_load(const char *glb_path) {
         glBufferData(GL_ARRAY_BUFFER, data_size, data_ptr, GL_STATIC_DRAW);
     }
 
-    /* Upload textures — map from material, not raw image order.
-     * Texture slot 0 = base color, slot 1 = emissive (if any). */
+    /* Upload ALL textures from the GLB images array.
+     * The embedded textures have correct UV-mapped vibrant colors.
+     * Image 0 = base color, Image 1 = normal map. */
     m->texture_count = 0;
-    if (prim->material) {
-        const cgltf_material *mat = prim->material;
-        /* Base color texture → slot 0 */
-        if (mat->pbr_metallic_roughness.base_color_texture.texture &&
-            mat->pbr_metallic_roughness.base_color_texture.texture->image) {
-            GLuint tex = upload_texture(
-                mat->pbr_metallic_roughness.base_color_texture.texture->image, data);
-            if (tex) m->textures[m->texture_count++] = tex;
-        }
-        /* Emissive texture → slot 1 */
-        if (mat->emissive_texture.texture &&
-            mat->emissive_texture.texture->image) {
-            GLuint tex = upload_texture(
-                mat->emissive_texture.texture->image, data);
-            if (tex) m->textures[m->texture_count++] = tex;
-        }
-    }
-    /* Fallback: if material didn't provide textures, upload images in order */
-    if (m->texture_count == 0) {
-        for (cgltf_size i = 0; i < data->images_count && m->texture_count < MAX_TEXTURES; i++) {
-            GLuint tex = upload_texture(&data->images[i], data);
-            if (tex) m->textures[m->texture_count++] = tex;
-        }
+    for (cgltf_size i = 0; i < data->images_count && m->texture_count < MAX_TEXTURES; i++) {
+        GLuint tex = upload_texture(&data->images[i], data);
+        if (tex) m->textures[m->texture_count++] = tex;
     }
 
     /* Load skin (skeletal animation) */
@@ -700,7 +708,7 @@ static void node_world_transform(const cgltf_node *n, Mat4 out) {
  * 8x gives ~5 flaps/sec — fast enough to read as hummingbird,
  * slow enough to see wing motion at 30fps.
  * Body/head/tail stay at 1x for smooth, natural sway. */
-#define WING_ANIM_SPEED 8.0f
+#define WING_ANIM_SPEED 2.3f
 
 static bool is_wing_node(const cgltf_node *node) {
     if (!node || !node->name) return false;

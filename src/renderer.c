@@ -19,7 +19,8 @@
 
 #define BLOOM_BLUR_PASSES   3       /* Number of blur ping-pong iterations */
 #define BLOOM_DOWNSAMPLE    2       /* Bloom FBOs at 1/N resolution */
-#define BLOOM_THRESHOLD     0.7f    /* Brightness cutoff for extraction */
+#define BLOOM_THRESHOLD     0.85f   /* Brightness cutoff for extraction */
+#define MOTION_BLUR_SAMPLES 1       /* 1 = disabled for now */
 
 /* ------------------------------------------------------------------ */
 /* State                                                               */
@@ -226,7 +227,10 @@ bool renderer_init(int width, int height) {
 }
 
 void renderer_frame(Model *model, const AudioBands *bands, float dt) {
-    /* --- Pass 1: Render scene to FBO --- */
+    /* --- Pass 1: Render scene to FBO with motion blur accumulation ---
+     * Render N sub-frames at slightly different animation times.
+     * Each sub-frame draws at 1/N alpha with additive blending.
+     * The wings move fast so they blur; the body barely moves so it stays sharp. */
     glBindFramebuffer(GL_FRAMEBUFFER, s_fbo_scene);
     glViewport(0, 0, s_width, s_height);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -242,50 +246,29 @@ void renderer_frame(Model *model, const AudioBands *bands, float dt) {
     loc = glGetUniformLocation(s_scene_prog, "u_high");
     if (loc >= 0) glUniform1f(loc, bands->high);
 
-    model_update(model, dt);
-    model_draw(model, &s_model_uniforms, bands->energy);
+    GLint u_alpha = glGetUniformLocation(s_scene_prog, "u_alpha");
+    float sub_dt = dt / (float)MOTION_BLUR_SAMPLES;
+    float alpha = 1.0f / (float)MOTION_BLUR_SAMPLES;
 
-    /* --- Pass 2: Bright extract --- */
-    glBindFramebuffer(GL_FRAMEBUFFER, s_fbo_bloom[0]);
-    glViewport(0, 0, s_bloom_w, s_bloom_h);
-    glClear(GL_COLOR_BUFFER_BIT);
-    glDisable(GL_DEPTH_TEST);
+    /* Use additive blending for accumulation */
+    glBlendFunc(GL_ONE, GL_ONE);
 
-    glUseProgram(s_extract_prog);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, s_tex_scene);
-    glUniform1i(glGetUniformLocation(s_extract_prog, "u_scene"), 0);
-    glUniform1f(glGetUniformLocation(s_extract_prog, "u_threshold"),
-                BLOOM_THRESHOLD - bands->bass * 0.3f);  /* Bass lowers threshold */
+    for (int s = 0; s < MOTION_BLUR_SAMPLES; s++) {
+        /* Clear depth only (not color) so each sub-frame can draw */
+        if (s > 0) glClear(GL_DEPTH_BUFFER_BIT);
 
-    draw_fullscreen_quad();
+        /* Set per-sub-frame alpha */
+        if (u_alpha >= 0) glUniform1f(u_alpha, alpha);
 
-    /* --- Pass 3: Gaussian blur ping-pong --- */
-    glUseProgram(s_blur_prog);
-    GLint u_image     = glGetUniformLocation(s_blur_prog, "u_image");
-    GLint u_horizontal = glGetUniformLocation(s_blur_prog, "u_horizontal");
-    GLint u_texel_size = glGetUniformLocation(s_blur_prog, "u_texel_size");
-
-    glUniform2f(u_texel_size, 1.0f / (float)s_bloom_w, 1.0f / (float)s_bloom_h);
-
-    for (int i = 0; i < BLOOM_BLUR_PASSES; i++) {
-        /* Horizontal: bloom[0] → bloom[1] */
-        glBindFramebuffer(GL_FRAMEBUFFER, s_fbo_bloom[1]);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, s_tex_bloom[0]);
-        glUniform1i(u_image, 0);
-        glUniform1i(u_horizontal, 1);
-        draw_fullscreen_quad();
-
-        /* Vertical: bloom[1] → bloom[0] */
-        glBindFramebuffer(GL_FRAMEBUFFER, s_fbo_bloom[0]);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, s_tex_bloom[1]);
-        glUniform1i(u_horizontal, 0);
-        draw_fullscreen_quad();
+        model_update(model, sub_dt);
+        model_draw(model, &s_model_uniforms, bands->energy);
     }
 
-    /* --- Pass 4: Composite to screen --- */
+    /* Restore standard alpha blending for bloom passes */
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    /* --- Blit scene FBO to screen (bloom disabled) --- */
+    glDisable(GL_DEPTH_TEST);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, s_width, s_height);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -296,14 +279,11 @@ void renderer_frame(Model *model, const AudioBands *bands, float dt) {
     glBindTexture(GL_TEXTURE_2D, s_tex_scene);
     glUniform1i(glGetUniformLocation(s_composite_prog, "u_scene"), 0);
 
+    /* Zero out bloom */
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, s_tex_bloom[0]);
     glUniform1i(glGetUniformLocation(s_composite_prog, "u_bloom"), 1);
-
-    /* Audio-reactive bloom intensity */
-    float bloom_intensity = 1.0f + bands->bass * 2.0f;
-    glUniform1f(glGetUniformLocation(s_composite_prog, "u_bloom_intensity"),
-                bloom_intensity);
+    glUniform1f(glGetUniformLocation(s_composite_prog, "u_bloom_intensity"), 0.0f);
     glUniform1f(glGetUniformLocation(s_composite_prog, "u_bass"), bands->bass);
     glUniform1f(glGetUniformLocation(s_composite_prog, "u_mid"), bands->mid);
 
