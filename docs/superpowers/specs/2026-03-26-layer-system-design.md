@@ -58,9 +58,9 @@ typedef struct Layer {
 - **`position/rotation/scale`**: Set by programmatic animation in `update()`. Layers incorporate these into their model matrix. Initialized to `{0,0,0}`, `{0,0,0}`, `{1,1,1}`.
 - **`init`**: Called once during startup. Allocate GL resources, load assets, compile shaders. Receives framebuffer dimensions.
 - **`update`**: Called each frame (only for enabled layers). Advance animation, update transforms. Receives audio bands and delta time.
-- **`draw`**: Called each frame (only for enabled layers, after update). Issue GL draw calls into the shared scene FBO. Receives audio bands for uniform setting.
+- **`draw`**: Called each frame (only for enabled layers, after update). Issue GL draw calls into the shared scene FBO. Receives audio bands for uniform setting. Responsible for setting its own audio-reactive uniforms. See "GL State Contract" below for entry/exit expectations.
 - **`resize`**: Called when framebuffer dimensions change. Recreate any size-dependent resources (FBOs).
-- **`shutdown`**: Called once during teardown. Free all GL resources and allocated memory.
+- **`shutdown`**: Called once during teardown. Free all GL resources, allocated memory, AND `self->user_data`. The layer owns its own cleanup.
 
 ## Scene Manager (in `renderer.c`)
 
@@ -104,6 +104,33 @@ The composite pass remains in `renderer.c` — it just displays whatever is in t
 - `void renderer_get_dimensions(int *w, int *h)` — so layers can query current framebuffer size
 - Shader loading already in `shader.h/shader.c` — no change needed
 
+### GL State Contract
+
+The renderer establishes the following GL state before calling each layer's `draw()`:
+
+- **Framebuffer**: shared scene FBO is bound
+- **Depth test**: `GL_DEPTH_TEST` enabled
+- **Blending**: `GL_BLEND` enabled with `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)`
+- **Clear**: color and depth already cleared for the frame
+
+Layers that change blend mode, disable depth test, or bind their own FBOs **must restore all three** (FBO, depth, blend) before returning from `draw()`. Use `renderer_get_scene_fbo()` to rebind the shared FBO.
+
+**Depth buffer is shared across layers** — it is NOT cleared between layer draw calls. This means 3D layers can occlude each other. For the Pepper's ghost use case (floating objects on black), this is generally desirable. If a future layer needs to ignore depth from prior layers, it can `glClear(GL_DEPTH_BUFFER_BIT)` at the start of its own `draw()`.
+
+### Camera Ownership
+
+**Each layer owns its own camera.** There is no shared view/projection matrix. The hummingbird layer uses the camera computed inside `model_load()` (auto-framed from bounding box). Future layers that render 3D content compute their own view/proj. Fullscreen shader layers (e.g., shadertoy effects) don't need a camera at all — they draw a fullscreen quad.
+
+### Per-Layer Transform Composition
+
+The `Layer.position/rotation/scale` fields compose with whatever internal transform a layer has. The convention is **layer transform applies first, then internal transform**: `final_model_matrix = internal_base_transform * layer_transform_matrix`. This means the layer transform operates in the model's local space (e.g., `position` shifts the model relative to its own center, not world origin). Layers compute `layer_transform_matrix` from the three fields using the helper pattern: `T(position) * Rx(rotation.x) * Ry(rotation.y) * Rz(rotation.z) * S(scale)`.
+
+For the hummingbird layer, `internal_base_transform` is the existing `base_transform` (the -90 deg Y rotation for side profile). The layer transform wraps around it.
+
+### Motion Blur
+
+The current motion blur implementation (multi-pass accumulation with additive blending and `MOTION_BLUR_SAMPLES`) moves into `layer_hummingbird.c`'s `draw()` method. The sub-frame loop is layer-internal: it clears depth (but not color) between sub-frames, sets `GL_ONE, GL_ONE` additive blending, and restores standard blending before returning. This is an internal detail of the hummingbird layer — other layers are not required to support motion blur. Currently disabled (`MOTION_BLUR_SAMPLES = 1`).
+
 ### Signature change
 
 `renderer_frame` no longer takes a `Model *`. New signature:
@@ -115,17 +142,22 @@ void renderer_frame(const AudioBands *bands, float dt);
 ## Key Handling (in `main.c`)
 
 ```c
-case SDL_KEYDOWN:
-    if (event.key.keysym.sym >= SDLK_1 && event.key.keysym.sym <= SDLK_0) {
-        int idx = (sym == SDLK_0) ? 9 : (sym - SDLK_1);
-        if (idx < s_layer_count) {
-            Layer *l = s_layers[idx];
-            if (l->current_option < l->option_count)
-                l->current_option++;
-            else
-                l->current_option = 0;
-        }
+case SDL_KEYDOWN: {
+    SDL_Keycode sym = event.key.keysym.sym;
+    int idx = -1;
+    if (sym >= SDLK_1 && sym <= SDLK_9)
+        idx = sym - SDLK_1;        // keys 1-9 -> indices 0-8
+    else if (sym == SDLK_0)
+        idx = 9;                     // key 0 -> index 9
+    if (idx >= 0 && idx < s_layer_count) {
+        Layer *l = s_layers[idx];
+        if (l->current_option < l->option_count)
+            l->current_option++;
+        else
+            l->current_option = 0;
     }
+    break;
+}
 ```
 
 Layers don't know about input. `main.c` owns key-to-layer mapping.
@@ -144,7 +176,7 @@ typedef struct {
 
     // Bloom pipeline (option 2 only)
     GLuint extract_prog, blur_prog, composite_prog;
-    GLuint fbo_scene, tex_scene, rbo_depth;
+    GLuint fbo_pre_bloom, tex_pre_bloom, rbo_depth;  // layer's private FBO (NOT the shared scene FBO)
     GLuint fbo_bloom[2], tex_bloom[2];
     int fb_width, fb_height, bloom_width, bloom_height;
     GLuint quad_vbo;
@@ -171,10 +203,12 @@ Returns a heap-allocated `Layer` with all vtable pointers set and `HummingbirdDa
 ### What moves from `renderer.c` to `layer_hummingbird.c`
 
 - Scene shader loading and `ModelUniforms` population
+- `glBindAttribLocation` calls for scene shader (attribs 0-4) and post-process shaders (attribs 0-1)
 - Bloom shader loading (extract, blur, composite programs)
 - Bloom FBO creation (`create_scene_fbo`, `create_fbo_color` for bloom)
 - The model rendering logic from `renderer_frame` (bind scene prog, set audio uniforms, model_update, model_draw)
 - The bloom pipeline logic (extract pass, blur ping-pong, composite with bloom intensity)
+- Motion blur sub-frame loop
 
 ### What stays in `renderer.c`
 
@@ -209,9 +243,8 @@ renderer_add_layer(hb);
 
 ```
 for each layer:
-    layer->shutdown(layer)
-    free(layer->user_data)
-    free(layer)
+    layer->shutdown(layer)   // shutdown() frees user_data internally
+    free(layer)              // main.c frees the Layer struct itself
 renderer_shutdown()
 audio_shutdown()
 SDL_Quit()
@@ -220,6 +253,7 @@ SDL_Quit()
 ## File Structure (new/changed files)
 
 ```
+CMakeLists.txt               # CHANGED — add layer_hummingbird.c to sources
 src/
   layer.h                    # NEW — Layer interface struct
   layer_hummingbird.h        # NEW — Hummingbird layer create function
