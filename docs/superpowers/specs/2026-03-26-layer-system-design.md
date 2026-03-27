@@ -92,7 +92,7 @@ renderer_frame(bands, dt):
         b. layer->draw(layer, bands)
     3. Bind default FBO (screen)
     4. Composite scene FBO to screen
-    5. Swap
+    // SDL_GL_SwapWindow remains in main.c, not here
 ```
 
 The composite pass remains in `renderer.c` — it just displays whatever is in the scene FBO. No per-model knowledge.
@@ -123,9 +123,9 @@ Layers that change blend mode, disable depth test, or bind their own FBOs **must
 
 ### Per-Layer Transform Composition
 
-The `Layer.position/rotation/scale` fields compose with whatever internal transform a layer has. The convention is **layer transform applies first, then internal transform**: `final_model_matrix = internal_base_transform * layer_transform_matrix`. This means the layer transform operates in the model's local space (e.g., `position` shifts the model relative to its own center, not world origin). Layers compute `layer_transform_matrix` from the three fields using the helper pattern: `T(position) * Rx(rotation.x) * Ry(rotation.y) * Rz(rotation.z) * S(scale)`.
+The `Layer.position/rotation/scale` fields compose with whatever internal transform a layer has. The convention is **layer transform wraps the internal transform**: `final_model_matrix = layer_transform_matrix * internal_base_transform`. In OpenGL's column-vector convention, the rightmost matrix is applied first — so the base transform orients the model (e.g., side profile), then the layer transform moves/rotates the already-oriented model in world space. Layers compute `layer_transform_matrix` from the three fields using: `T(position) * Rx(rotation.x) * Ry(rotation.y) * Rz(rotation.z) * S(scale)`.
 
-For the hummingbird layer, `internal_base_transform` is the existing `base_transform` (the -90 deg Y rotation for side profile). The layer transform wraps around it.
+For the hummingbird layer, `internal_base_transform` is the existing `base_transform` (the -90 deg Y rotation for side profile). The layer transform operates in world space around it.
 
 ### Motion Blur
 
@@ -179,8 +179,8 @@ typedef struct {
     GLuint fbo_pre_bloom, tex_pre_bloom, rbo_depth;  // layer's private FBO (NOT the shared scene FBO)
     GLuint fbo_bloom[2], tex_bloom[2];
     int fb_width, fb_height, bloom_width, bloom_height;
-    GLuint quad_vbo;
 } HummingbirdData;
+// Uses shared draw_fullscreen_quad() from renderer.h for bloom passes
 ```
 
 ### Options
@@ -189,7 +189,24 @@ typedef struct {
 |--------|----------|
 | 0 | Off (not drawn) |
 | 1 | Hummingbird without bloom — draws directly into shared scene FBO |
-| 2 | Hummingbird with bloom — renders to own FBO, runs bloom pipeline, composites result into shared scene FBO with additive blending |
+| 2 | Hummingbird with bloom — see "Option 2 Bloom Pipeline" below |
+
+#### Option 2 Bloom Pipeline
+
+When bloom is active, the hummingbird layer manages its own FBO pipeline:
+
+1. Bind `fbo_pre_bloom`, clear color+depth
+2. Render hummingbird model (same as option 1, but into the private FBO)
+3. Bright extract: bind `fbo_bloom[0]`, sample `tex_pre_bloom`, extract bright fragments
+4. Blur ping-pong: alternate `fbo_bloom[0]` and `fbo_bloom[1]` for gaussian blur passes
+5. Composite into shared scene FBO:
+   - Rebind shared scene FBO via `renderer_get_scene_fbo()`
+   - `glBlendFunc(GL_ONE, GL_ONE)` (additive)
+   - Bind `tex_pre_bloom` (scene) and `tex_bloom[*]` (bloom) as texture inputs
+   - Draw fullscreen quad with the layer's composite shader (`scene + bloom * intensity`)
+   - Restore `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)` before returning
+
+The layer uses the shared `draw_fullscreen_quad()` from `renderer.h` — no need for its own `quad_vbo`.
 
 ### Public API
 
