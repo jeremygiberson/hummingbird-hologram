@@ -176,8 +176,12 @@ static void render_model(HummingbirdData *d, const AudioBands *bands) {
     float sub_dt = d->stashed_dt / (float)MOTION_BLUR_SAMPLES;
     float alpha = 1.0f / (float)MOTION_BLUR_SAMPLES;
 
-    /* Use additive blending for accumulation */
-    glBlendFunc(GL_ONE, GL_ONE);
+    /* Only use additive blending when motion blur is active (multiple sub-frames).
+     * With a single sample, standard blending avoids incorrectly adding to content
+     * already drawn by other layers into the shared scene FBO. */
+    if (MOTION_BLUR_SAMPLES > 1) {
+        glBlendFunc(GL_ONE, GL_ONE);
+    }
 
     for (int s = 0; s < MOTION_BLUR_SAMPLES; s++) {
         if (s > 0) glClear(GL_DEPTH_BUFFER_BIT);
@@ -186,8 +190,9 @@ static void render_model(HummingbirdData *d, const AudioBands *bands) {
         model_draw(d->model, &d->model_uniforms, bands->energy);
     }
 
-    /* Restore standard alpha blending */
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    if (MOTION_BLUR_SAMPLES > 1) {
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    }
 }
 
 /* ------------------------------------------------------------------ */
