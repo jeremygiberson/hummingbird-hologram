@@ -50,7 +50,7 @@ void main()
     uv /= vec2(u_resolution.y / u_resolution.x, 1.0);
     uv *= 1.3;
 
-    for (float i = 0.0; i < 600.0; i += 1.0) {
+    for (float i = 0.0; i < 300.0; i += 1.0) {
         float f1 = mod(i * 0.101213, 0.28);
 
         /* Map f1 (0..0.28) to a blend of bass/mid/high */

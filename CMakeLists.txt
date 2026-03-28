@@ -23,7 +23,8 @@ if(NOT SDL2_FOUND)
 endif()
 
 # --- Platform detection ---
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm|aarch64")
+option(HOLOGRAM_FORCE_DESKTOP "Force desktop GL path (skip Pi detection)" OFF)
+if(NOT HOLOGRAM_FORCE_DESKTOP AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm|aarch64")
     set(PLATFORM_PI TRUE)
     message(STATUS "Target platform: Raspberry Pi (GLES2)")
     add_definitions(-DPLATFORM_PI)

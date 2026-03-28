@@ -112,6 +112,7 @@ int main(int argc, char *argv[]) {
         free(particles);
         goto cleanup;
     }
+    particles->current_option = 1;  /* start enabled */
     renderer_add_layer(particles);
 
     Layer *hb = layer_hummingbird_create();
