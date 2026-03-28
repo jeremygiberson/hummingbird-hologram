@@ -44,9 +44,9 @@ void model_draw(const Model *m, const ModelUniforms *uniforms, float energy);
 void model_set_wing_speed(Model *m, float speed);
 
 /* Apply an extra transform on top of the base scene-graph transform.
- * rotation_y is in radians. scale is uniform. translation is (x,y,z).
- * This is applied in model_draw as: base_transform * translate * rotateY * scale */
-void model_set_extra_transform(Model *m, float rotation_y,
+ * rotation_y/rotation_x are in radians. scale is uniform. translation is (x,y,z).
+ * Applied as: base_transform * translate * rotateY * rotateX * scale */
+void model_set_extra_transform(Model *m, float rotation_y, float rotation_x,
                                 float scale, const float translation[3]);
 
 /* Free GPU and CPU resources. */

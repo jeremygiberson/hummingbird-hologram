@@ -61,6 +61,15 @@ static void mat4_rotate_y(Mat4 out, float rad) {
     out[10] =  c;
 }
 
+static void mat4_rotate_x(Mat4 out, float rad) {
+    mat4_identity(out);
+    float c = cosf(rad), s = sinf(rad);
+    out[5]  =  c;
+    out[6]  =  s;
+    out[9]  = -s;
+    out[10] =  c;
+}
+
 static void mat4_multiply(Mat4 out, const Mat4 a, const Mat4 b) {
     Mat4 tmp;
     for (int i = 0; i < 4; i++) {
@@ -262,7 +271,8 @@ struct Model {
 
     /* External overrides (set by layer) */
     float wing_speed;         /* Wing animation speed multiplier (default 2.3) */
-    float extra_rotation_y;   /* Additional Y rotation in radians */
+    float extra_rotation_y;   /* Additional Y rotation (yaw) in radians */
+    float extra_rotation_x;   /* Additional X rotation (pitch) in radians */
     float extra_scale;        /* Additional uniform scale (default 1.0) */
     float extra_translation[3]; /* Additional translation */
 };
@@ -793,10 +803,17 @@ void model_update(Model *m, float dt) {
             mat4_multiply(m->model_matrix, m->model_matrix, t);
         }
 
-        /* Apply extra Y rotation */
+        /* Apply extra Y rotation (yaw) */
         if (m->extra_rotation_y != 0.0f) {
             Mat4 r;
             mat4_rotate_y(r, m->extra_rotation_y);
+            mat4_multiply(m->model_matrix, m->model_matrix, r);
+        }
+
+        /* Apply extra X rotation (pitch) */
+        if (m->extra_rotation_x != 0.0f) {
+            Mat4 r;
+            mat4_rotate_x(r, m->extra_rotation_x);
             mat4_multiply(m->model_matrix, m->model_matrix, r);
         }
 
@@ -888,10 +905,11 @@ void model_set_wing_speed(Model *m, float speed) {
     if (m) m->wing_speed = speed;
 }
 
-void model_set_extra_transform(Model *m, float rotation_y,
+void model_set_extra_transform(Model *m, float rotation_y, float rotation_x,
                                 float scale, const float translation[3]) {
     if (!m) return;
     m->extra_rotation_y = rotation_y;
+    m->extra_rotation_x = rotation_x;
     m->extra_scale = scale;
     m->extra_translation[0] = translation[0];
     m->extra_translation[1] = translation[1];

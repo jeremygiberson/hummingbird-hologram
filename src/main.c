@@ -101,7 +101,19 @@ int main(int argc, char *argv[]) {
         goto cleanup;
     }
 
-    /* Create and register layers */
+    /* Create and register layers (back to front draw order) */
+    Layer *particles = layer_particles_create();
+    if (!particles) {
+        fprintf(stderr, "[main] Failed to create particles layer\n");
+        goto cleanup;
+    }
+    if (!particles->init(particles, fb_w, fb_h)) {
+        fprintf(stderr, "[main] Particles layer init failed\n");
+        free(particles);
+        goto cleanup;
+    }
+    renderer_add_layer(particles);
+
     Layer *hb = layer_hummingbird_create();
     if (!hb) {
         fprintf(stderr, "[main] Failed to create hummingbird layer\n");
@@ -114,18 +126,6 @@ int main(int argc, char *argv[]) {
     }
     hb->current_option = 1;  /* start enabled, no bloom */
     renderer_add_layer(hb);
-
-    Layer *particles = layer_particles_create();
-    if (!particles) {
-        fprintf(stderr, "[main] Failed to create particles layer\n");
-        goto cleanup;
-    }
-    if (!particles->init(particles, fb_w, fb_h)) {
-        fprintf(stderr, "[main] Particles layer init failed\n");
-        free(particles);
-        goto cleanup;
-    }
-    renderer_add_layer(particles);
 
     Layer *dbg_audio = layer_debug_audio_create();
     if (!dbg_audio) {

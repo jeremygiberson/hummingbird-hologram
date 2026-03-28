@@ -46,6 +46,8 @@
  * Range: right profile → forward-ish */
 #define ROTATION_Y_MIN    0.4f// (-0.4f)  /* Slightly more rightward */
 #define ROTATION_Y_MAX     2.4f * 1.57f   /* Facing camera (forward) */
+#define PITCH_X_MIN        (-0.3f)  /* Nose down (~-17°) */
+#define PITCH_X_MAX         0.3f    /* Nose up (~+17°) */
 #define SCALE_MIN           0.55f
 #define SCALE_MAX           1.1f
 #define TRANSLATE_RANGE     1.7f    /* Max translation offset in each axis */
@@ -94,16 +96,19 @@ typedef struct {
 
     /* Current interpolated values (the "live" state) */
     float cur_rotation_y;
+    float cur_rotation_x;  /* Pitch */
     float cur_scale;
     float cur_translation[3];
 
     /* Ease source (where we started easing from) */
     float src_rotation_y;
+    float src_rotation_x;
     float src_scale;
     float src_translation[3];
 
     /* Ease target (where we're easing to) */
     float tgt_rotation_y;
+    float tgt_rotation_x;
     float tgt_scale;
     float tgt_translation[3];
 
@@ -433,6 +438,7 @@ static void update_bpm(HummingbirdData *d, const AudioBands *bands, float dt) {
 static void trigger_new_pose(HummingbirdData *d) {
     /* Snapshot current interpolated values as ease source */
     d->src_rotation_y = d->cur_rotation_y;
+    d->src_rotation_x = d->cur_rotation_x;
     d->src_scale = d->cur_scale;
     d->src_translation[0] = d->cur_translation[0];
     d->src_translation[1] = d->cur_translation[1];
@@ -440,6 +446,7 @@ static void trigger_new_pose(HummingbirdData *d) {
 
     /* Pick new random targets */
     d->tgt_rotation_y = hb_randf_range(d, ROTATION_Y_MIN, ROTATION_Y_MAX);
+    d->tgt_rotation_x = hb_randf_range(d, PITCH_X_MIN, PITCH_X_MAX);
     d->tgt_scale = hb_randf_range(d, SCALE_MIN, SCALE_MAX);
     d->tgt_translation[0] = hb_randf_range(d, -TRANSLATE_RANGE, TRANSLATE_RANGE);
     d->tgt_translation[1] = hb_randf_range(d, -TRANSLATE_RANGE * 0.5f, TRANSLATE_RANGE * 0.5f);
@@ -493,6 +500,7 @@ static void update_pose(HummingbirdData *d, const AudioBands *bands, float dt) {
         float t = smoothstep_ease(d->ease_elapsed / POSE_EASE_DURATION);
 
         d->cur_rotation_y = lerpf(d->src_rotation_y, d->tgt_rotation_y, t);
+        d->cur_rotation_x = lerpf(d->src_rotation_x, d->tgt_rotation_x, t);
         d->cur_scale = lerpf(d->src_scale, d->tgt_scale, t);
         d->cur_translation[0] = lerpf(d->src_translation[0], d->tgt_translation[0], t);
         d->cur_translation[1] = lerpf(d->src_translation[1], d->tgt_translation[1], t);
@@ -503,7 +511,7 @@ static void update_pose(HummingbirdData *d, const AudioBands *bands, float dt) {
     }
 
     /* Apply to model */
-    model_set_extra_transform(d->model, d->cur_rotation_y,
+    model_set_extra_transform(d->model, d->cur_rotation_y, d->cur_rotation_x,
                                d->cur_scale, d->cur_translation);
 }
 
