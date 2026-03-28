@@ -67,6 +67,16 @@ static GLuint link_program(GLuint vert, GLuint frag) {
     GLuint program = glCreateProgram();
     glAttachShader(program, vert);
     glAttachShader(program, frag);
+
+    /* Bind common attribute locations before linking.
+     * Fullscreen shaders expect: 0=a_position, 1=a_texcoord.
+     * Debug shaders expect: 0=a_position, 1=a_color.
+     * Model shaders re-bind and re-link in their own init code.
+     * glBindAttribLocation silently ignores names absent from the shader. */
+    glBindAttribLocation(program, 0, "a_position");
+    glBindAttribLocation(program, 1, "a_texcoord");
+    glBindAttribLocation(program, 1, "a_color");
+
     glLinkProgram(program);
 
     GLint success;

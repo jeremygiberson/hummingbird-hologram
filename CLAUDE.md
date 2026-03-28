@@ -57,6 +57,8 @@ Each layer is a `Layer` struct containing:
 | Key | Layer | option_count | Options |
 |-----|-------|-------------|---------|
 | 1 | Hummingbird | 2 | 1 = no bloom, 2 = with bloom |
+| 2 | Particles | 1 | 1 = particles dance effect |
+| 3 | Debug Audio | 1 | 1 = show audio analysis bars |
 
 ### How to Add a New Layer
 
@@ -330,8 +332,12 @@ The FFT output is binned into frequency bands that map to shader uniforms:
 | `u_mid` | 250–2000 Hz | Color temperature shift (warm ↔ cool) |
 | `u_high` | 2000–16000 Hz | Bloom radius / sparkle sharpness |
 | `u_energy` | Full spectrum RMS | Model scale pulse (subtle breathing) |
+| `u_beat` | Bass spike detection | Impulse on kick hits, fast decay — triggers flashes/pulses |
+| `u_onset` | Full-spectrum transient | Impulse on any sharp attack (snare, hi-hat, consonant) |
+| `u_spectral_centroid` | Weighted avg frequency | Sound "brightness" 0=warm/dark, 1=bright/sharp — maps to color temperature |
+| `u_spectral_flux` | Frame-to-frame spectral change | How much the sound is changing — maps to animation speed/complexity |
 
-All values are smoothed with exponential moving average to avoid jitter.
+All values are smoothed with exponential moving average to avoid jitter. Beat and onset are impulse values that spike to 1.0 and decay exponentially.
 
 ## Boot Sequence (Pi Target)
 

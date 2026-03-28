@@ -9,6 +9,8 @@
 #include "audio.h"
 #include "layer.h"
 #include "layer_hummingbird.h"
+#include "layer_particles.h"
+#include "layer_debug_audio.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -112,6 +114,30 @@ int main(int argc, char *argv[]) {
     }
     hb->current_option = 1;  /* start enabled, no bloom */
     renderer_add_layer(hb);
+
+    Layer *particles = layer_particles_create();
+    if (!particles) {
+        fprintf(stderr, "[main] Failed to create particles layer\n");
+        goto cleanup;
+    }
+    if (!particles->init(particles, fb_w, fb_h)) {
+        fprintf(stderr, "[main] Particles layer init failed\n");
+        free(particles);
+        goto cleanup;
+    }
+    renderer_add_layer(particles);
+
+    Layer *dbg_audio = layer_debug_audio_create();
+    if (!dbg_audio) {
+        fprintf(stderr, "[main] Failed to create debug audio layer\n");
+        goto cleanup;
+    }
+    if (!dbg_audio->init(dbg_audio, fb_w, fb_h)) {
+        fprintf(stderr, "[main] Debug audio layer init failed\n");
+        free(dbg_audio);
+        goto cleanup;
+    }
+    renderer_add_layer(dbg_audio);
 
     /* --- Main loop --- */
     fprintf(stderr, "[main] Entering main loop at %d FPS\n", TARGET_FPS);

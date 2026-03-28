@@ -15,6 +15,12 @@ typedef struct {
     float mid;      /* 250–2000 Hz: color temperature */
     float high;     /* 2000–16000 Hz: bloom sharpness */
     float energy;   /* Full spectrum RMS: scale pulse */
+
+    /* Derived analysis */
+    float beat;             /* 0.0–1.0: beat impulse (spikes on kick hits, decays) */
+    float onset;            /* 0.0–1.0: transient detection across full spectrum */
+    float spectral_centroid;/* 0.0–1.0: normalized "brightness" of sound */
+    float spectral_flux;    /* 0.0–1.0: how much the spectrum changed this frame */
 } AudioBands;
 
 /* Initialize audio capture. Returns true on success.

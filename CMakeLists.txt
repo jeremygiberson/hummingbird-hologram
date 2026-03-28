@@ -10,7 +10,7 @@ option(HOLOGRAM_EMBED_SHADERS "Embed shaders as string literals (release)" OFF)
 
 # --- Default window size (matches target display) ---
 set(HOLOGRAM_DEFAULT_WIDTH 800 CACHE STRING "Default window width")
-set(HOLOGRAM_DEFAULT_HEIGHT 480 CACHE STRING "Default window height")
+set(HOLOGRAM_DEFAULT_HEIGHT 800 CACHE STRING "Default window height")
 
 # --- Find SDL2 ---
 find_package(PkgConfig QUIET)
@@ -55,6 +55,8 @@ set(SOURCES
     src/main.c
     src/renderer.c
     src/layer_hummingbird.c
+    src/layer_particles.c
+    src/layer_debug_audio.c
     src/shader.c
     src/audio.c
     src/model.c
