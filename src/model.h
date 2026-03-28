@@ -39,6 +39,16 @@ typedef struct {
 
 void model_draw(const Model *m, const ModelUniforms *uniforms, float energy);
 
+/* Set wing animation speed multiplier (default 2.3).
+ * Higher = faster flapping. Set from BPM or other source. */
+void model_set_wing_speed(Model *m, float speed);
+
+/* Apply an extra transform on top of the base scene-graph transform.
+ * rotation_y is in radians. scale is uniform. translation is (x,y,z).
+ * This is applied in model_draw as: base_transform * translate * rotateY * scale */
+void model_set_extra_transform(Model *m, float rotation_y,
+                                float scale, const float translation[3]);
+
 /* Free GPU and CPU resources. */
 void model_destroy(Model *m);
 

@@ -157,6 +157,10 @@ hologram/
 │   ├── platform.h                     # GL include shim, platform detection
 │   ├── renderer.h                     # Renderer interface
 │   ├── renderer.c                     # GL setup, bloom pipeline, draw calls
+│   ├── layer.h                        # Layer vtable interface
+│   ├── layer_hummingbird.h/c          # Hummingbird model rendering layer
+│   ├── layer_particles.h/c            # Particles Dance audio-reactive effect layer
+│   ├── layer_debug_audio.h/c          # Debug overlay: audio analysis bars + FPS
 │   ├── shader.h                       # Shader compilation utilities
 │   ├── shader.c                       # Load, prepend preamble, compile, link
 │   ├── audio.h                        # Audio capture + FFT interface
@@ -174,6 +178,9 @@ hologram/
 │   ├── scene.vert                     # Vertex shader: model rendering + GPU skinning (up to 32 joints)
 │   ├── scene.frag                     # Fragment shader: 3-light setup, iridescence, audio-reactive rim
 │   ├── fullscreen.vert                # Fullscreen quad vertex shader (bloom passes)
+│   ├── particles.frag                 # Particles Dance fullscreen effect (600-particle loop)
+│   ├── debug_bars.vert/frag           # Debug overlay bar rendering
+│   ├── blit.frag                      # Simple texture passthrough
 │   ├── bright_extract.frag            # Bloom: extract bright fragments
 │   ├── blur.frag                      # Bloom: gaussian blur (parameterized H/V)
 │   └── composite.frag                 # Bloom: final composite + audio modulation
@@ -337,7 +344,14 @@ The FFT output is binned into frequency bands that map to shader uniforms:
 | `u_spectral_centroid` | Weighted avg frequency | Sound "brightness" 0=warm/dark, 1=bright/sharp — maps to color temperature |
 | `u_spectral_flux` | Frame-to-frame spectral change | How much the sound is changing — maps to animation speed/complexity |
 
-All values are smoothed with exponential moving average to avoid jitter. Beat and onset are impulse values that spike to 1.0 and decay exponentially.
+All values are smoothed with exponential moving average (alpha=0.15) to avoid jitter. Beat and onset are impulse values that spike to 1.0 and decay exponentially.
+
+### Audio Scaling & Breathing Baseline
+
+- **Raw FFT magnitudes are tiny** (~0.0001–0.01 from a laptop mic). They are scaled by empirical gain factors (bass ×200, mid ×300, high ×500, energy ×250, flux ×2000) in `audio_update()` before EMA smoothing. Adjust these if changing mic hardware.
+- **Spectral centroid has a noise gate** — requires minimum total magnitude before computing, otherwise decays to 0. Without this, mic self-noise produces random centroid jitter in silence.
+- **Breathing baseline** — An Apple sleep-LED inspired curve (3.5s inhale, 2.5s exhale, 1.5s pause, 7.5s cycle) is additively applied to bass/mid/energy so visuals are never fully dead when silent. Peak amplitude is 0.008 — very subtle. Beware that log-scaled visual mappings (like the particles layer's `log(1+x*4)/log(5)`) amplify low values, so even small breathing amplitudes can be visually significant.
+- **Particle shader performance:** The particles.frag runs a 600-iteration loop per fragment. At 800×800 that's 384M distance calculations per frame. This is the primary GPU cost. Do NOT increase the iteration count or render resolution without profiling.
 
 ## Boot Sequence (Pi Target)
 
@@ -350,13 +364,14 @@ All values are smoothed with exponential moving average to avoid jitter. Beat an
 ## Development Notes
 
 - Suppress macOS GL deprecation warnings with `-DGL_SILENCE_DEPRECATION` (handled automatically by CMakeLists.txt)
-- On macOS, the SDL window opens at the display resolution. Use `--width` / `--height` args or let it default to 800×480 to match the Pi display.
+- On macOS, the SDL window opens at the display resolution. Use `--width` / `--height` args or let it default to 800×800 to match the Pi display.
 - Shader hot-reload: in debug builds, shaders are loaded from disk each frame if modified (check mtime). In release, they could be embedded as string literals via CMake.
 - The model animation loop point should be seamless. Verify in Blender that frame 0 and the last frame match poses.
 - When no `hummingbird.glb` is present, the app falls back to a spinning debug icosahedron — useful for testing the full bloom and audio pipeline immediately.
 - On desktop Linux, `GL_GLEXT_PROTOTYPES` is required for GL 2.0+ function declarations (already handled in platform.h).
 - **Screenshot tool:** `./scripts/screenshot.sh [output.png]` launches the app, waits 3s for rendering, captures the window via Swift/CGWindowList, and kills the app. Requires macOS. Default output: `/tmp/hologram_screenshot.png`. Useful for validating visual changes without manual interaction.
-- **Vertex attribute layout** (must match between renderer.c `glBindAttribLocation` and model.c draw): 0=position, 1=normal, 2=texcoord, 3=joints, 4=weights. Post-process shaders use: 0=position, 1=texcoord.
+- **Vertex attribute layout** (must match between renderer.c `glBindAttribLocation` and model.c draw): 0=position, 1=normal, 2=texcoord, 3=joints, 4=weights. Post-process/fullscreen shaders use: 0=position, 1=texcoord. Debug shaders use: 0=position, 1=color.
+- **Shader attribute binding pitfall (Hard-Won Knowledge):** `shader.c`'s `link_program()` binds `a_position=0`, `a_texcoord=1`, `a_color=1` before linking. **This is critical** — without explicit `glBindAttribLocation`, the GL driver assigns arbitrary attribute locations. On Apple's Metal-backed GL 2.1, `a_texcoord` was assigned to location 0 and `a_position` to location 1 (the opposite of what `draw_fullscreen_quad()` expects), causing fullscreen effects to render tiny and off-center. Model shaders (scene.vert) need `a_texcoord=2` instead of 1, so `layer_hummingbird.c` re-binds and re-links after `shader_load()`. This re-link works on Apple's driver (it preserves shader IR after `glDeleteShader`) but is not guaranteed by the GL spec.
 - **Skinning on VC4:** The vertex shader uses dynamic array indexing (`u_joints[int(a_joints.x)]`) which works on desktop GL 2.1 but may not work on VC4's GLSL ES 100. If it doesn't, the skinning will need to be computed on the CPU or use an if/else chain instead of dynamic indexing.
 - **Motion blur** is implemented as multi-pass accumulation in `renderer_frame`: render N sub-frames at `dt/N` time offsets with `GL_ONE, GL_ONE` additive blending and `u_alpha = 1/N` in the fragment shader. Depth is cleared between sub-frames but color is not. Wing bones move fast (8x) so they blur naturally; body barely moves so it stays sharp. Controlled by `MOTION_BLUR_SAMPLES` (1 = disabled, 5 = good quality). Currently disabled.
 - **Bloom is currently disabled** in `renderer_frame` (bloom intensity set to 0, extract/blur passes skipped). The pipeline (FBOs, shaders) is intact and can be re-enabled by restoring the bloom passes in `renderer_frame`. When re-enabling, be aware that `composite.frag` no longer applies gamma or tonemapping — just `scene + bloom * intensity` with a hue-preserving clamp.

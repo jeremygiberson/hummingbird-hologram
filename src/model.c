@@ -14,6 +14,9 @@
 #include <string.h>
 #include <math.h>
 
+/* Default wing animation speed multiplier */
+#define WING_ANIM_SPEED 2.3f
+
 /* ------------------------------------------------------------------ */
 /* Simple 4x4 matrix math (column-major for GL)                        */
 /* ------------------------------------------------------------------ */
@@ -256,6 +259,12 @@ struct Model {
     Mat4 model_matrix;
     Mat4 view_matrix;
     Mat4 proj_matrix;
+
+    /* External overrides (set by layer) */
+    float wing_speed;         /* Wing animation speed multiplier (default 2.3) */
+    float extra_rotation_y;   /* Additional Y rotation in radians */
+    float extra_scale;        /* Additional uniform scale (default 1.0) */
+    float extra_translation[3]; /* Additional translation */
 };
 
 /* ------------------------------------------------------------------ */
@@ -374,6 +383,8 @@ Model *model_load(const char *glb_path) {
 
     Model *m = (Model *)calloc(1, sizeof(Model));
     m->gltf = data;
+    m->wing_speed = WING_ANIM_SPEED;
+    m->extra_scale = 1.0f;
 
     /* Use the first mesh, first primitive */
     const cgltf_mesh *mesh = &data->meshes[0];
@@ -705,10 +716,7 @@ static void node_world_transform(const cgltf_node *n, Mat4 out) {
 
 /* Wing bones animate at a faster rate to simulate hummingbird flapping.
  * The baked animation has ~0.67 flaps/sec (1.5s per cycle).
- * 8x gives ~5 flaps/sec — fast enough to read as hummingbird,
- * slow enough to see wing motion at 30fps.
  * Body/head/tail stay at 1x for smooth, natural sway. */
-#define WING_ANIM_SPEED 2.3f
 
 static bool is_wing_node(const cgltf_node *node) {
     if (!node || !node->name) return false;
@@ -719,7 +727,7 @@ void model_update(Model *m, float dt) {
     if (!m) return;
 
     m->anim_time += dt;
-    m->anim_time_wings += dt * WING_ANIM_SPEED;
+    m->anim_time_wings += dt * m->wing_speed;
 
     if (m->gltf && m->gltf->animations_count > 0) {
         /* Wrap both timers */
@@ -773,9 +781,29 @@ void model_update(Model *m, float dt) {
             }
         }
 
-        /* Model matrix = base_transform (for skinned mesh, this is identity
-         * since skinning matrices already include the full hierarchy) */
+        /* Model matrix = base_transform * extra_translate * extra_rotateY * extra_scale */
         memcpy(m->model_matrix, m->base_transform, sizeof(Mat4));
+
+        /* Apply extra translation */
+        if (m->extra_translation[0] != 0.0f || m->extra_translation[1] != 0.0f ||
+            m->extra_translation[2] != 0.0f) {
+            Mat4 t;
+            mat4_translate(t, m->extra_translation[0], m->extra_translation[1],
+                           m->extra_translation[2]);
+            mat4_multiply(m->model_matrix, m->model_matrix, t);
+        }
+
+        /* Apply extra Y rotation */
+        if (m->extra_rotation_y != 0.0f) {
+            Mat4 r;
+            mat4_rotate_y(r, m->extra_rotation_y);
+            mat4_multiply(m->model_matrix, m->model_matrix, r);
+        }
+
+        /* Apply extra scale */
+        if (m->extra_scale != 1.0f) {
+            mat4_scale_uniform(m->model_matrix, m->extra_scale);
+        }
     } else {
         /* No animation data (debug model or static) — spin on Y axis */
         mat4_rotate_y(m->model_matrix, m->anim_time * 0.8f);
@@ -856,6 +884,20 @@ void model_draw(const Model *m, const ModelUniforms *u, float energy) {
     glDisableVertexAttribArray(4);
 }
 
+void model_set_wing_speed(Model *m, float speed) {
+    if (m) m->wing_speed = speed;
+}
+
+void model_set_extra_transform(Model *m, float rotation_y,
+                                float scale, const float translation[3]) {
+    if (!m) return;
+    m->extra_rotation_y = rotation_y;
+    m->extra_scale = scale;
+    m->extra_translation[0] = translation[0];
+    m->extra_translation[1] = translation[1];
+    m->extra_translation[2] = translation[2];
+}
+
 void model_destroy(Model *m) {
     if (!m) return;
 
@@ -924,6 +966,8 @@ Model *model_create_debug(void) {
     m->anim_time = 0.0f;
     m->anim_duration = 0.0f;
     m->texture_count = 0;
+    m->wing_speed = WING_ANIM_SPEED;
+    m->extra_scale = 1.0f;
     mat4_identity(m->base_transform);
 
     /* Upload geometry */

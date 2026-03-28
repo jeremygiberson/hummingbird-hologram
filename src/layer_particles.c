@@ -96,17 +96,6 @@ static void particles_draw(Layer *self, const AudioBands *bands) {
 
     draw_fullscreen_quad();
 
-    /* Debug: print state once */
-    static int debug_count = 0;
-    if (debug_count < 3) {
-        GLint loc_pos = glGetAttribLocation(d->prog, "a_position");
-        GLint loc_tc  = glGetAttribLocation(d->prog, "a_texcoord");
-        GLint loc_res = d->u_resolution;
-        fprintf(stderr, "[particles] draw: a_position=%d a_texcoord=%d u_resolution=%d res=%dx%d\n",
-                loc_pos, loc_tc, loc_res, d->width, d->height);
-        debug_count++;
-    }
-
     /* Restore GL state */
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glEnable(GL_DEPTH_TEST);
