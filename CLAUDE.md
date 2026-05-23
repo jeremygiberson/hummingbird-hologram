@@ -351,7 +351,7 @@ All values are smoothed with exponential moving average (alpha=0.15) to avoid ji
 - **Raw FFT magnitudes are tiny** (~0.0001–0.01 from a laptop mic). They are scaled by empirical gain factors (bass ×200, mid ×300, high ×500, energy ×250, flux ×2000) in `audio_update()` before EMA smoothing. Adjust these if changing mic hardware.
 - **Spectral centroid has a noise gate** — requires minimum total magnitude before computing, otherwise decays to 0. Without this, mic self-noise produces random centroid jitter in silence.
 - **Breathing baseline** — An Apple sleep-LED inspired curve (3.5s inhale, 2.5s exhale, 1.5s pause, 7.5s cycle) is additively applied to bass/mid/energy so visuals are never fully dead when silent. Peak amplitude is 0.008 — very subtle. Beware that log-scaled visual mappings (like the particles layer's `log(1+x*4)/log(5)`) amplify low values, so even small breathing amplitudes can be visually significant.
-- **Particle shader performance:** The particles.frag runs a 600-iteration loop per fragment. At 800×800 that's 384M distance calculations per frame. This is the primary GPU cost. Do NOT increase the iteration count or render resolution without profiling.
+- **Particle shader performance:** The particles.frag runs a 200-iteration particle loop per fragment, plus a 16-iteration loop to pre-sample the synthesized FFT spectrum. The shader runs at a fixed 400×400 internal FBO (see `PARTICLE_FBO_W/H` in layer_particles.c) and is blitted up, so cost is independent of screen resolution. This is the primary GPU cost. Do NOT increase the iteration count or internal render resolution without profiling.
 
 ## Boot Sequence (Pi Target)
 
