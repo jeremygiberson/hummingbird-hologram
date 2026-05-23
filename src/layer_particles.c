@@ -1,13 +1,13 @@
 /*
  * layer_particles.c — Particles Dance rendering layer
  *
- * Audio-reactive particle effect. Renders 600 glowing dots arranged in
+ * Audio-reactive particle effect. Renders 200 glowing dots arranged in
  * circular orbits via a fullscreen shader, with positions and brightness
  * driven by audio frequency bands.
  *
- * The expensive 600-iteration shader runs at a fixed internal resolution
- * (400x400) regardless of screen size, then is blitted up to the scene FBO.
- * This keeps GPU cost constant and manageable on the Pi 5.
+ * The particle shader runs at a fixed internal resolution (400x400)
+ * regardless of screen size, then is blitted up to the scene FBO. This
+ * keeps GPU cost constant and manageable on the Pi.
  *
  * Adapted from Shadertoy "Particles Dance"
  * (https://www.shadertoy.com/view/MdfBz7)
