@@ -14,7 +14,7 @@
 set -euo pipefail
 
 BUILD_TYPE="${1:-Debug}"
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="/home/hummingbird/Desktop/hummingbird-hologram"
 BUILD_DIR="${PROJECT_DIR}/build"
 ASSET_LINK="/usr/share/hologram"
 
